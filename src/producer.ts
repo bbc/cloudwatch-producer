@@ -14,36 +14,10 @@ export class Producer {
   batchSize?: number;
   reportFrequency?: number;
   namespace?: string;
-  metrics: Metrics;
-
-  private validate(metrics) {
-    if (!metrics) {
-      throw new Error('No metrics were supplied.');
-    }
-
-    const validCloudwatchUnit =
-      /^(Seconds|Microseconds|Milliseconds|Bytes|Kilobytes|Megabytes|Gigabytes|Terabytes|Bits|Kilobits|Megabits|Gigabits|Terabits|Percent|Count|Bytes\/Second|Kilobytes\/Second|Megabytes\/Second|Gigabytes\/Second|Terabytes\/Second|Bits\/Second|Kilobits\/Second|Megabits\/Second|Gigabits\/Second|Terabits\/Second|Count\/Second|None)$/;
-    const validMetricConfig = z.object({
-      metricName: z.string().regex(/^[A-z\d]+$/),
-      dimensions: z.string().array().max(10),
-      unit: z.string().regex(validCloudwatchUnit)
-    });
-
-    Object.keys(metrics).forEach((metric) => {
-      const result = validMetricConfig.safeParse(metrics[metric]);
-
-      if (!result.success) {
-        throw new Error(
-          `The metric '${metric}' config could not be validated.`
-        );
-      }
-    });
-  }
+  metrics?: Metrics;
 
   constructor(options: ProducerOptions) {
-    this.validate(options.metrics);
-
-    this.metrics = options.metrics;
+    this.metrics = options.metrics || undefined;
     this.batchSize = options.batchSize || 20;
     this.reportFrequency = options.reportFrequency || 30000;
     this.namespace = options.namespace || 'EC2';
@@ -57,22 +31,12 @@ export class Producer {
 
   private reporterTimeoutId: NodeJS.Timeout | undefined = undefined;
 
-  private getMetric({ metricName, unit, dimensions }) {
-    if (!this.metrics[metricName]) {
-      this.metrics[metricName] = this.createMetric({
-        metricName,
-        unit,
-        dimensions
-      });
-    }
+  public isRunning = false;
 
-    return this.metrics[metricName];
-  }
-
-  private createMetric({ metricName, unit, dimensions }) {
+  private createMetric({ MetricName, Unit, Dimensions }) {
     const result = {
-      MetricName: metricName,
-      Dimensions: [],
+      MetricName,
+      Dimensions: Dimensions || [],
       StatisticValues: {
         Maximum: 0.0,
         Minimum: 0.0,
@@ -80,25 +44,28 @@ export class Producer {
         Sum: 0.0
       },
       Timestamp: new Date(),
-      Unit: unit
+      Unit: Unit || "None"
     };
-
-    if (dimensions) {
-      Object.keys(dimensions).forEach((key) => {
-        result.Dimensions.push({
-          Name: key,
-          Value: dimensions[key]
-        });
-      });
-    }
 
     return result;
   }
 
-  private updateMetric({ metricName, unit, dimensions, value }) {
+  private getMetric({ MetricName, Unit, Dimensions }) {
+    if (!this.metrics[MetricName]) {
+      this.metrics[MetricName] = this.createMetric({
+        MetricName,
+        Unit,
+        Dimensions
+      });
+    }
+
+    return this.metrics[MetricName];
+  }
+
+  private createOrUpdateMetric({ MetricName, Unit, Dimensions, value }) {
     value = Number.isFinite(value) ? value : 0;
 
-    const metric = this.getMetric({ metricName, unit, dimensions });
+    const metric = this.getMetric({ MetricName, Unit, Dimensions });
 
     const newMetric = metric;
 
@@ -117,39 +84,74 @@ export class Producer {
       }
     }
 
-    this.metrics[metricName] = newMetric;
+    this.metrics[MetricName] = newMetric;
   }
 
-  public collect(metric) {
-    const { typeId, result, dimensions, value } = metric;
-    const metricPatternConfig =
-      this.metrics[typeId] && this.metrics[typeId][result];
-
-    if (!metricPatternConfig) {
-      return;
+  private validate(metric) {
+    if (!metric) {
+      throw new Error('No metric was supplied.');
     }
 
-    const { metricName, unit } = metricPatternConfig;
-    const validDimensions = metricPatternConfig.dimensions || [];
-    const suppliedDimensions = dimensions ? Object.keys(dimensions) : [];
+    const validCloudwatchUnit =
+      /^(Seconds|Microseconds|Milliseconds|Bytes|Kilobytes|Megabytes|Gigabytes|Terabytes|Bits|Kilobits|Megabits|Gigabits|Terabits|Percent|Count|Bytes\/Second|Kilobytes\/Second|Megabytes\/Second|Gigabytes\/Second|Terabytes\/Second|Bits\/Second|Kilobits\/Second|Megabits\/Second|Gigabits\/Second|Terabits\/Second|Count\/Second|None)$/;
+    const validMetricConfig = z.object({
+      MetricName: z.string().regex(/^[A-z\d]+$/),
+      Dimensions: z.string().array().max(10),
+      Unit: z.string().regex(validCloudwatchUnit)
+    });
 
-    if (
-      validDimensions.length !== suppliedDimensions.length ||
-      suppliedDimensions.filter((key) => !validDimensions.includes(key))
-        .length > 0
-    ) {
-      return;
+    const result = validMetricConfig.safeParse(metric);
+
+    if (!result.success) {
+      throw new Error(`The metric '${metric}' config could not be validated.`);
     }
+  }
 
-    this.updateMetric({ metricName, unit, dimensions, value });
+  private async sendMetrics(metricsList) {
+    if (metricsList.length > 0) {
+      const queuedMetrics = {
+        MetricData: metricsList,
+        Namespace: this.namespace
+      };
+
+      const command = new PutMetricDataCommand(queuedMetrics);
+      const response = await this.cloudwatch.send(command);
+
+      // TODO: Add validation that it has sent
+      this.metrics = {};
+
+      return response;
+    }
+  }
+
+  public collect(metric, value) {
+    this.validate(metric);
+
+    const { MetricName, Dimensions, Unit } = metric;
+
+    this.createOrUpdateMetric({ MetricName, Unit, Dimensions, value });
+
+    if (!this.isRunning) {
+      this.sendMetrics(this.metrics);
+    }
   }
 
   public start() {
+    this.isRunning = true;
+
     if (this.reporterTimeoutId) {
       clearTimeout(this.reporterTimeoutId);
     }
 
     this.reporterTimeoutId = setTimeout(this.poll, this.reportFrequency);
+  }
+
+  public stop() {
+    this.isRunning = false;
+
+    if (this.reporterTimeoutId) {
+      clearTimeout(this.reporterTimeoutId);
+    }
   }
 
   private poll() {
@@ -167,25 +169,9 @@ export class Producer {
       );
     }
 
-    Promise.all(batches.map(this.sendBatch));
+    Promise.all(batches.map(this.sendMetrics));
 
     return this.start();
-  }
-
-  private async sendBatch(metricsList) {
-    if (metricsList.length > 0) {
-      const queuedMetrics = {
-        MetricData: metricsList,
-        Namespace: this.namespace
-      };
-
-      const command = new PutMetricDataCommand(queuedMetrics);
-      const response = await this.cloudwatch.send(command);
-
-      console.log(response);
-
-      return response;
-    }
   }
 }
 
