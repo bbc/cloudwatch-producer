@@ -44,7 +44,7 @@ export class Producer {
         Sum: 0.0
       },
       Timestamp: new Date(),
-      Unit: Unit || "None"
+      Unit: Unit || 'None'
     };
 
     return result;
@@ -117,10 +117,13 @@ export class Producer {
       const command = new PutMetricDataCommand(queuedMetrics);
       const response = await this.cloudwatch.send(command);
 
-      // TODO: Add validation that it has sent
-      this.metrics = {};
+      if (response?.['$metadata']?.httpStatusCode === 200) {
+        this.metrics = {};
 
-      return response;
+        return response;
+      } else {
+        return null;
+      }
     }
   }
 

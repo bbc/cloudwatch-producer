@@ -23,5 +23,5 @@ export interface ProducerOptions {
   batchSize?: number;
   reportFrequency?: number;
   namespace?: string;
-  metrics: Metrics;
+  metrics?: Metrics;
 }
