@@ -21,6 +21,7 @@ export class Producer {
     this.batchSize = options.batchSize || 20;
     this.reportFrequency = options.reportFrequency || 30000;
     this.namespace = options.namespace || 'EC2';
+    this.metrics = options.metrics || {};
     this.cloudwatch =
       options.cloudwatch ||
       new CloudWatchClient({
@@ -51,7 +52,7 @@ export class Producer {
   }
 
   private getMetric({ MetricName, Unit, Dimensions }) {
-    if (!this.metrics[MetricName]) {
+    if (!this.metrics?.[MetricName]) {
       this.metrics[MetricName] = this.createMetric({
         MetricName,
         Unit,
@@ -94,17 +95,30 @@ export class Producer {
 
     const validCloudwatchUnit =
       /^(Seconds|Microseconds|Milliseconds|Bytes|Kilobytes|Megabytes|Gigabytes|Terabytes|Bits|Kilobits|Megabits|Gigabits|Terabits|Percent|Count|Bytes\/Second|Kilobytes\/Second|Megabytes\/Second|Gigabytes\/Second|Terabytes\/Second|Bits\/Second|Kilobits\/Second|Megabits\/Second|Gigabits\/Second|Terabits\/Second|Count\/Second|None)$/;
+
     const validMetricConfig = z.object({
       MetricName: z.string().regex(/^[A-z\d]+$/),
-      Dimensions: z.string().array().max(10),
-      Unit: z.string().regex(validCloudwatchUnit)
+      Dimensions: z
+        .array(
+          z.object({
+            Name: z.string().regex(/^[A-z\d]+$/),
+            Value: z.string()
+          })
+        )
+        .max(30)
+        .optional(),
+      Unit: z.string().regex(validCloudwatchUnit).optional()
     });
 
     const result = validMetricConfig.safeParse(metric);
 
     if (!result.success) {
-      throw new Error(`The metric '${metric}' config could not be validated.`);
+      throw new Error(
+        `The metric '${metric.MetricName}' could not be validated.`
+      );
     }
+
+    return result.data;
   }
 
   private async sendMetrics(metricsList) {

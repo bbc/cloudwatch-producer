@@ -1,5 +1,7 @@
 # cloudwatch-producer
 
+>**Note** This project is a work in progress at the moment and not fully ready for production!
+
 [![NPM downloads](https://img.shields.io/npm/dm/cloudwatch-producer.svg?style=flat)](https://npmjs.org/package/cloudwatch-producer)
 [![Build Status](https://github.com/bbc/cloudwatch-producer/actions/workflows/test.yml/badge.svg)](https://github.com/bbc/cloudwatch-producer/actions/workflows/test.yml)
 
